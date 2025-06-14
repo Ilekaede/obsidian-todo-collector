@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-todo-collector",
+  "name": "TODO Collector",
+  "version": "1.0.0",
+  "minAppVersion": "1.0.0",
+  "description": "Obsidian の TODO を収集・管理するためのプラグインです。",
+  "author": "Ilekaede",
+  "authorUrl": "https://github.com/Ilekaede",
+  "isDesktopOnly": false
+}
