@@ -7,6 +7,8 @@ import {
   Notice,
   addIcon,
   TAbstractFile,
+  parseYaml,
+  Vault,
 } from "obsidian";
 
 interface CompletedTodo {
@@ -14,10 +16,20 @@ interface CompletedTodo {
   completedAt: number;
 }
 
+interface TodoFrontmatter {
+  source?: string;
+  date?: string;
+  messageId?: string;
+  userId?: string;
+  add_todo?: boolean;
+}
+
+type TodoHandling = "immediate" | "delayed" | "keep";
+
 interface TodoCollectorSettings {
   targetDirectories: string[];
   todoTags: string[];
-  autoDeleteChecked: boolean;
+  completedTodoHandling: TodoHandling;
   autoDeleteHours: number;
   completedTodos: CompletedTodo[];
 }
@@ -25,7 +37,7 @@ interface TodoCollectorSettings {
 const DEFAULT_SETTINGS: TodoCollectorSettings = {
   targetDirectories: [],
   todoTags: ["#TODO", "#t"],
-  autoDeleteChecked: false,
+  completedTodoHandling: "immediate", // デフォルトは即時削除
   autoDeleteHours: 24,
   completedTodos: [],
 };
@@ -58,120 +70,321 @@ export default class LineTodoCollectorPlugin extends Plugin {
     this.registerInterval(
       window.setInterval(() => this.collectTodos(), 5 * 60 * 1000)
     );
+
+    // チェックボックスの状態変更を監視
+    this.registerEvent(
+      this.app.vault.on("modify", async (file: TAbstractFile) => {
+        if (!(file instanceof TFile) || !file.path.endsWith(".md")) return;
+
+        const content = await this.app.vault.read(file as TFile);
+        const newContent = await this.processCompletedTodos(
+          content,
+          file as TFile
+        );
+
+        if (content !== newContent) {
+          await this.app.vault.modify(file as TFile, newContent);
+        }
+      })
+    );
   }
 
   async collectTodos() {
     const { vault } = this.app;
     const settings = this.settings;
     const todoFile = await vault.getAbstractFileByPath("TODO.md");
-    let todoContent = "";
     const existingTasks = new Set<string>();
+    const newTasks: string[] = [];
     const now = Date.now();
 
     // 既存のTODOファイルの内容を読み込む
+    let existingContent = "";
     if (todoFile) {
-      const currentContent = await vault.read(todoFile as TFile);
-      const lines = currentContent.split("\n");
-
-      // 完了したタスクの処理
-      if (settings.autoDeleteChecked) {
-        // 期限切れの完了タスクを削除
-        settings.completedTodos = settings.completedTodos.filter(
-          (todo) =>
-            now - todo.completedAt < settings.autoDeleteHours * 3600 * 1000
-        );
-        await this.saveSettings();
-      }
+      existingContent = await vault.read(todoFile as TFile);
+      const lines = existingContent.split("\n");
 
       // 既存のタスクをSetに追加
       for (const line of lines) {
-        if (line.startsWith("- [ ]")) {
-          existingTasks.add(line);
-        } else if (line.startsWith("- [x]")) {
-          // 完了したタスクの時刻を記録
-          const taskText = line.substring(6); // "- [x] " を除去
-          if (!settings.completedTodos.some((todo) => todo.text === taskText)) {
-            settings.completedTodos.push({
-              text: taskText,
-              completedAt: now,
-            });
-          }
+        if (line.startsWith("- [ ]") || line.startsWith("- [x]")) {
           existingTasks.add(line);
         }
       }
     }
 
     // 各ディレクトリからTODOを収集
+    const allFiles = vault.getMarkdownFiles();
     for (const dir of settings.targetDirectories) {
-      const files = vault
-        .getMarkdownFiles()
-        .filter((file) => file.path.startsWith(dir));
+      // ディレクトリパスの正規化
+      const normalizedDir = dir.trim();
+
+      // デバッグ用ログ
+      console.log(`Searching in directory: ${normalizedDir}`);
+
+      // 該当ディレクトリ配下のファイルをフィルタリング
+      const files = allFiles.filter((file) => {
+        const filePath = file.path;
+        const isMatch = filePath
+          .toLowerCase()
+          .startsWith(normalizedDir.toLowerCase());
+        console.log(
+          `Checking file: ${filePath}, matches ${normalizedDir}: ${isMatch}`
+        );
+        return isMatch;
+      });
+
+      console.log(`Found ${files.length} files in ${normalizedDir}`);
 
       for (const file of files) {
         const content = await vault.read(file);
         const lines = content.split("\n");
+        let fileModified = false;
+        let newContent = "";
 
-        for (const line of lines) {
+        // フロントマターの解析
+        let inFrontmatter = false;
+        let frontmatterStart = -1;
+        let frontmatterEnd = -1;
+        let hasFrontmatter = false;
+        let currentFrontmatter: TodoFrontmatter = {};
+
+        // フロントマターの位置を特定
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].trim() === "---") {
+            if (!inFrontmatter) {
+              inFrontmatter = true;
+              frontmatterStart = i;
+            } else {
+              frontmatterEnd = i;
+              hasFrontmatter = true;
+              break;
+            }
+          }
+        }
+
+        // 既存のフロントマターを解析
+        if (hasFrontmatter) {
+          const frontmatterContent = lines
+            .slice(frontmatterStart + 1, frontmatterEnd)
+            .join("\n");
+          try {
+            currentFrontmatter = parseYaml(
+              frontmatterContent
+            ) as TodoFrontmatter;
+          } catch (e) {
+            console.error("Failed to parse frontmatter:", e);
+          }
+        }
+
+        // add_todoがtrueの場合はスキップ
+        if (currentFrontmatter.add_todo) {
+          continue;
+        }
+
+        let todoFound = false;
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
           // 各タグパターンでマッチングを試みる
           for (const tag of settings.todoTags) {
             const regex = new RegExp(`^\\s*${tag}\\s+(.+)$`);
             const match = line.match(regex);
             if (match) {
+              todoFound = true;
               const todoText = match[1];
+
               const newTask = `- [ ] ${todoText} (${file.basename})`;
 
-              // 重複チェック（未完了タスクと完了タスクの両方をチェック）
-              const isDuplicate =
-                existingTasks.has(newTask) ||
-                settings.completedTodos.some(
-                  (todo) =>
-                    todo.text === `${todoText} (${file.basename})` &&
-                    now - todo.completedAt <
-                      settings.autoDeleteHours * 3600 * 1000
-                );
-
-              if (!isDuplicate) {
-                todoContent += newTask + "\n";
+              // 重複チェック
+              if (!existingTasks.has(newTask)) {
+                newTasks.push(newTask);
                 existingTasks.add(newTask);
               }
-              break; // マッチしたら次の行へ
+              break;
             }
           }
+        }
+
+        // TODOが見つかった場合、フロントマターを更新
+        if (todoFound) {
+          if (!hasFrontmatter) {
+            // フロントマターがない場合は新規作成
+            newContent = "---\n";
+            newContent += "add_todo: true\n";
+            newContent += "---\n";
+            newContent += content;
+          } else {
+            // 既存のフロントマターを更新
+            const frontmatterLines = lines.slice(
+              frontmatterStart + 1,
+              frontmatterEnd
+            );
+            if (
+              !frontmatterLines.some((line) =>
+                line.trim().startsWith("add_todo:")
+              )
+            ) {
+              frontmatterLines.push("add_todo: true");
+            } else {
+              // add_todoが既に存在する場合は値を更新
+              const updatedLines = frontmatterLines.map((line) =>
+                line.trim().startsWith("add_todo:") ? "add_todo: true" : line
+              );
+              frontmatterLines.splice(
+                0,
+                frontmatterLines.length,
+                ...updatedLines
+              );
+            }
+            newContent = lines.slice(0, frontmatterStart + 1).join("\n") + "\n";
+            newContent += frontmatterLines.join("\n") + "\n";
+            newContent += lines.slice(frontmatterEnd).join("\n");
+          }
+          fileModified = true;
+        }
+
+        if (fileModified) {
+          await vault.modify(file, newContent);
         }
       }
     }
 
     // TODOファイルの内容を更新
+    let finalContent = "";
     if (todoFile) {
-      const currentContent = await vault.read(todoFile as TFile);
-      const lines = currentContent.split("\n");
+      const lines = existingContent.split("\n");
 
-      // 完了したTODOを処理
-      if (settings.autoDeleteChecked) {
-        // 期限切れの完了タスクを削除
-        const newLines = lines.filter((line) => {
-          if (!line.startsWith("- [x]")) return true;
-          const taskText = line.substring(6); // "- [x] " を除去
-          const completedTodo = settings.completedTodos.find(
-            (todo) => todo.text === taskText
+      switch (settings.completedTodoHandling) {
+        case "immediate":
+          // 完了済みTODOは即時削除
+          const uncompletedTodos = lines.filter((line) =>
+            line.startsWith("- [ ]")
           );
-          return (
-            completedTodo &&
-            now - completedTodo.completedAt <
-              settings.autoDeleteHours * 3600 * 1000
+          finalContent = [...uncompletedTodos, ...newTasks].join("\n");
+          break;
+
+        case "delayed":
+          // 期限付きで保持
+          const completedTodos = lines.filter((line) => {
+            if (!line.startsWith("- [x]")) return false;
+            const taskText = line.substring(6);
+            const completedTodo = settings.completedTodos.find(
+              (todo) => todo.text === taskText
+            );
+            return (
+              completedTodo &&
+              now - completedTodo.completedAt <
+                settings.autoDeleteHours * 3600 * 1000
+            );
+          });
+
+          const delayedUncompletedTodos = lines.filter((line) =>
+            line.startsWith("- [ ]")
           );
-        });
-        todoContent = newLines.join("\n") + "\n" + todoContent;
-      } else {
-        // 完了したTODOを保持
-        const completedTodos = lines.filter((line) => line.startsWith("- [x]"));
-        todoContent = completedTodos.join("\n") + "\n" + todoContent;
+          finalContent = [
+            ...completedTodos,
+            ...delayedUncompletedTodos,
+            ...newTasks,
+          ].join("\n");
+          break;
+
+        case "keep":
+          // すべてのTODOを保持
+          const keptCompletedTodos = lines.filter((line) =>
+            line.startsWith("- [x]")
+          );
+          const keptUncompletedTodos = lines.filter((line) =>
+            line.startsWith("- [ ]")
+          );
+          finalContent = [
+            ...keptCompletedTodos,
+            ...keptUncompletedTodos,
+            ...newTasks,
+          ].join("\n");
+          break;
       }
 
-      await vault.modify(todoFile as TFile, todoContent);
+      await vault.modify(todoFile as TFile, finalContent);
     } else {
-      await vault.create("TODO.md", todoContent);
+      // 新規作成の場合
+      finalContent = newTasks.join("\n");
+      await vault.create("TODO.md", finalContent);
     }
+  }
+
+  async processCompletedTodos(content: string, file: TFile): Promise<string> {
+    const lines = content.split("\n");
+    let modified = false;
+    let result: string[] = [];
+
+    // フロントマターの解析
+    let inFrontmatter = false;
+    let frontmatterStart = -1;
+    let frontmatterEnd = -1;
+    let frontmatterContent = "";
+
+    // フロントマターの位置を特定
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (line === "---") {
+        if (!inFrontmatter) {
+          inFrontmatter = true;
+          frontmatterStart = i;
+        } else {
+          frontmatterEnd = i;
+          break;
+        }
+      }
+    }
+
+    // 既存のフロントマターを解析
+    let frontmatter: TodoFrontmatter = {};
+    if (frontmatterStart !== -1 && frontmatterEnd !== -1) {
+      frontmatterContent = lines
+        .slice(frontmatterStart + 1, frontmatterEnd)
+        .join("\n");
+      try {
+        frontmatter = parseYaml(frontmatterContent) as TodoFrontmatter;
+      } catch (e) {
+        console.error("Failed to parse frontmatter:", e);
+      }
+    }
+
+    // チェックボックスの完了状態を確認
+    const hasCompletedTodo = lines.some((line) => line.startsWith("- [x]"));
+    if (hasCompletedTodo) {
+      frontmatter.add_todo = true;
+      modified = true;
+
+      // 即時削除の場合は、完了したTODOを含む行を削除
+      if (this.settings.completedTodoHandling === "immediate") {
+        const filteredLines = lines.filter((line) => !line.startsWith("- [x]"));
+        return filteredLines.join("\n");
+      }
+    }
+
+    // フロントマターの更新
+    if (modified) {
+      if (frontmatterStart === -1) {
+        result.push("---");
+        result.push(
+          Object.entries(frontmatter)
+            .map(([key, value]) => `${key}: ${value}`)
+            .join("\n")
+        );
+        result.push("---");
+        result.push(...lines);
+      } else {
+        result.push(...lines.slice(0, frontmatterStart + 1));
+        result.push(
+          Object.entries(frontmatter)
+            .map(([key, value]) => `${key}: ${value}`)
+            .join("\n")
+        );
+        result.push(...lines.slice(frontmatterEnd));
+      }
+      return result.join("\n");
+    }
+
+    return content;
   }
 
   async loadSettings() {
@@ -229,31 +442,66 @@ class TodoCollectorSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("完了したTODOを自動削除")
-      .setDesc("完了したTODOを自動的に削除します")
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.autoDeleteChecked)
+      .setName("完了済みTODOの処理")
+      .setDesc("完了済みTODOの処理方法を選択してください")
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("immediate", "即時削除")
+          .addOption("delayed", "時間を置いて削除")
+          .addOption("keep", "保持する")
+          .setValue(this.plugin.settings.completedTodoHandling)
           .onChange(async (value) => {
-            this.plugin.settings.autoDeleteChecked = value;
+            this.plugin.settings.completedTodoHandling = value as TodoHandling;
             await this.plugin.saveSettings();
+            // 設定画面を再描画して関連項目の表示/非表示を更新
+            this.display();
           })
       );
 
-    new Setting(containerEl)
-      .setName("完了したTODOの削除時間")
-      .setDesc("完了したTODOを何時間後に削除するか指定してください")
-      .addText((text) =>
-        text
-          .setPlaceholder("24")
-          .setValue(String(this.plugin.settings.autoDeleteHours))
-          .onChange(async (value) => {
-            const hours = parseInt(value);
-            if (!isNaN(hours) && hours > 0) {
-              this.plugin.settings.autoDeleteHours = hours;
-              await this.plugin.saveSettings();
-            }
-          })
-      );
+    // 時間を置いて削除の場合のみ表示
+    if (this.plugin.settings.completedTodoHandling === "delayed") {
+      new Setting(containerEl)
+        .setName("完了したTODOの削除時間")
+        .setDesc("完了したTODOを何時間後に削除するか指定してください")
+        .addText((text) =>
+          text
+            .setPlaceholder("24")
+            .setValue(String(this.plugin.settings.autoDeleteHours))
+            .onChange(async (value) => {
+              const hours = parseInt(value);
+              if (!isNaN(hours) && hours > 0) {
+                this.plugin.settings.autoDeleteHours = hours;
+                await this.plugin.saveSettings();
+              }
+            })
+        );
+    }
   }
+}
+
+function extractFrontmatter(
+  fileLines: string[],
+  todoLine: string
+): string | null {
+  const todoLineIndex = fileLines.indexOf(todoLine);
+  if (todoLineIndex === -1) return null;
+
+  // TODO行の前のフロントマターを探す
+  let start = -1;
+  let end = -1;
+  for (let i = todoLineIndex - 1; i >= 0; i--) {
+    if (fileLines[i].trim() === "---") {
+      if (end === -1) {
+        end = i;
+      } else {
+        start = i;
+        break;
+      }
+    }
+  }
+
+  if (start !== -1 && end !== -1) {
+    return fileLines.slice(start + 1, end).join("\n");
+  }
+  return null;
 }
