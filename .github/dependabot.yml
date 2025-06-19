@@ -4,8 +4,6 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 10
-    reviewers:
-      - "a_sakura"
+    open-pull-requests-limit: 0
     assignees:
-      - "a_sakura"
+      - "Ilekaede"

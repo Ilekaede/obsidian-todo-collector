@@ -1,0 +1,7 @@
+# Global owners
+* @Ilekaede
+
+# Dependabot PRs
+/.github/dependabot.yml @Ilekaede
+/package.json @Ilekaede
+/package-lock.json @Ilekaede 
