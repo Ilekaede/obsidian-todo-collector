@@ -212,30 +212,20 @@ export default class LineTodoCollectorPlugin extends Plugin {
             newContent += "---\n";
             newContent += content;
           } else {
-            // 既存のフロントマターを更新
-            const frontmatterLines = lines.slice(
-              frontmatterStart + 1,
-              frontmatterEnd
+            // 既存のフロントマターをパースしてadd_todo: trueを追加
+            let frontmatterObj: Record<string, any> = {};
+            try {
+              frontmatterObj =
+                parseYaml(
+                  lines.slice(frontmatterStart + 1, frontmatterEnd).join("\n")
+                ) || {};
+            } catch {}
+            frontmatterObj.add_todo = true;
+            const newFrontmatterLines = Object.entries(frontmatterObj).map(
+              ([k, v]) => `${k}: ${v}`
             );
-            if (
-              !frontmatterLines.some((line) =>
-                line.trim().startsWith("add_todo:")
-              )
-            ) {
-              frontmatterLines.push("add_todo: true");
-            } else {
-              // add_todoが既に存在する場合は値を更新
-              const updatedLines = frontmatterLines.map((line) =>
-                line.trim().startsWith("add_todo:") ? "add_todo: true" : line
-              );
-              frontmatterLines.splice(
-                0,
-                frontmatterLines.length,
-                ...updatedLines
-              );
-            }
             newContent = lines.slice(0, frontmatterStart + 1).join("\n") + "\n";
-            newContent += frontmatterLines.join("\n") + "\n";
+            newContent += newFrontmatterLines.join("\n") + "\n";
             newContent += lines.slice(frontmatterEnd).join("\n");
           }
           fileModified = true;
@@ -373,12 +363,20 @@ export default class LineTodoCollectorPlugin extends Plugin {
         result.push("---");
         result.push(...lines);
       } else {
-        result.push(...lines.slice(0, frontmatterStart + 1));
-        result.push(
-          Object.entries(frontmatter)
-            .map(([key, value]) => `${key}: ${value}`)
-            .join("\n")
+        // 既存のフロントマターをパースしてadd_todo: trueを追加
+        let frontmatterObj: Record<string, any> = {};
+        try {
+          frontmatterObj =
+            parseYaml(
+              lines.slice(frontmatterStart + 1, frontmatterEnd).join("\n")
+            ) || {};
+        } catch {}
+        frontmatterObj.add_todo = true;
+        const newFrontmatterLines = Object.entries(frontmatterObj).map(
+          ([k, v]) => `${k}: ${v}`
         );
+        result.push(...lines.slice(0, frontmatterStart + 1));
+        result.push(...newFrontmatterLines);
         result.push(...lines.slice(frontmatterEnd));
       }
       return result.join("\n");
