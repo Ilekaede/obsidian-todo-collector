@@ -16,7 +16,7 @@
     "plugin",
     "todo"
   ],
-  "author": "a_sakura",
+  "author": "Ilekaede",
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^24.0.3",
