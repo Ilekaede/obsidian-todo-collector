@@ -46,7 +46,7 @@ const OUTPUT_FILE = "TODO.md";
 const RIBBON_ICON = "check-square";
 
 export default class LineTodoCollectorPlugin extends Plugin {
-  settings: TodoCollectorSettings;
+  settings: TodoCollectorSettings = DEFAULT_SETTINGS;
 
   async onload() {
     await this.loadSettings();
@@ -92,7 +92,7 @@ export default class LineTodoCollectorPlugin extends Plugin {
   async collectTodos() {
     const { vault } = this.app;
     const settings = this.settings;
-    const todoFile = await vault.getAbstractFileByPath("TODO.md");
+    const todoFile = vault.getAbstractFileByPath(OUTPUT_FILE);
     const existingTasks = new Set<string>();
     const newTasks: string[] = [];
     const now = Date.now();
@@ -475,31 +475,4 @@ class TodoCollectorSettingTab extends PluginSettingTab {
         );
     }
   }
-}
-
-function extractFrontmatter(
-  fileLines: string[],
-  todoLine: string
-): string | null {
-  const todoLineIndex = fileLines.indexOf(todoLine);
-  if (todoLineIndex === -1) return null;
-
-  // TODO行の前のフロントマターを探す
-  let start = -1;
-  let end = -1;
-  for (let i = todoLineIndex - 1; i >= 0; i--) {
-    if (fileLines[i].trim() === "---") {
-      if (end === -1) {
-        end = i;
-      } else {
-        start = i;
-        break;
-      }
-    }
-  }
-
-  if (start !== -1 && end !== -1) {
-    return fileLines.slice(start + 1, end).join("\n");
-  }
-  return null;
 }
