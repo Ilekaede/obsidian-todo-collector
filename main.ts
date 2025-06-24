@@ -76,11 +76,11 @@ export default class LineTodoCollectorPlugin extends Plugin {
       this.app.vault.on("modify", async (file: TAbstractFile) => {
         if (!(file instanceof TFile) || !file.path.endsWith(".md")) return;
 
+        // TODOファイルは除外
+        if (file.path === OUTPUT_FILE) return;
+
         const content = await this.app.vault.read(file as TFile);
-        const newContent = await this.processCompletedTodos(
-          content,
-          file as TFile
-        );
+        const newContent = await this.processCompletedTodos(content);
 
         if (content !== newContent) {
           await this.app.vault.modify(file as TFile, newContent);
@@ -135,6 +135,11 @@ export default class LineTodoCollectorPlugin extends Plugin {
       console.log(`Found ${files.length} files in ${normalizedDir}`);
 
       for (const file of files) {
+        // TODOファイルは除外
+        if (file.path === OUTPUT_FILE) {
+          continue;
+        }
+
         const content = await vault.read(file);
         const lines = content.split("\n");
         let fileModified = false;
@@ -300,7 +305,7 @@ export default class LineTodoCollectorPlugin extends Plugin {
     }
   }
 
-  async processCompletedTodos(content: string, file: TFile): Promise<string> {
+  async processCompletedTodos(content: string): Promise<string> {
     const lines = content.split("\n");
     let modified = false;
     let result: string[] = [];

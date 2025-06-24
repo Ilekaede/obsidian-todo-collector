@@ -47,8 +47,7 @@ describe("LineTodoCollectorPlugin Integration Tests", () => {
 
       // 6. 完了済みTODOを処理
       const processedContent = await plugin.processCompletedTodos(
-        completedContent,
-        todoFile as any
+        completedContent
       );
 
       // 7. 完了済みTODOが削除されていることを確認

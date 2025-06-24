@@ -95,10 +95,7 @@ describe("LineTodoCollectorPlugin", () => {
       plugin.settings.completedTodoHandling = "immediate";
 
       const content = "# Sample\n- [x] 完了したタスク\n- [ ] 未完了タスク";
-      const result = await plugin.processCompletedTodos(
-        content,
-        new TFile("test.md") as any
-      );
+      const result = await plugin.processCompletedTodos(content);
 
       expect(result).not.toContain("- [x] 完了したタスク");
       expect(result).toContain("- [ ] 未完了タスク");
@@ -108,10 +105,7 @@ describe("LineTodoCollectorPlugin", () => {
       plugin.settings.completedTodoHandling = "keep";
 
       const content = "# Sample\n- [x] 完了したタスク\n- [ ] 未完了タスク";
-      const result = await plugin.processCompletedTodos(
-        content,
-        new TFile("test.md") as any
-      );
+      const result = await plugin.processCompletedTodos(content);
 
       expect(result).toContain("- [x] 完了したタスク");
       expect(result).toContain("- [ ] 未完了タスク");
@@ -126,10 +120,7 @@ describe("LineTodoCollectorPlugin", () => {
     test("フロントマターなしのファイルにフロントマターを追加できる", async () => {
       plugin.settings.completedTodoHandling = "keep";
       const content = "# Sample\n- [x] テストタスク";
-      const result = await plugin.processCompletedTodos(
-        content,
-        new TFile("test.md") as any
-      );
+      const result = await plugin.processCompletedTodos(content);
 
       expect(result).toContain("---");
       expect(result).toContain("add_todo: true");
@@ -143,10 +134,7 @@ describe("LineTodoCollectorPlugin", () => {
       console.log(content);
       console.log("=== END INPUT CONTENT ===");
 
-      const result = await plugin.processCompletedTodos(
-        content,
-        new TFile("test.md") as any
-      );
+      const result = await plugin.processCompletedTodos(content);
 
       console.log("=== TEST RESULT ===");
       console.log(result);
