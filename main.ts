@@ -76,11 +76,9 @@ export default class LineTodoCollectorPlugin extends Plugin {
       this.app.vault.on("modify", async (file: TAbstractFile) => {
         if (!(file instanceof TFile) || !file.path.endsWith(".md")) return;
 
-        // TODOファイルは除外
-        if (file.path === OUTPUT_FILE) return;
-
+        // TODOファイルも監視対象に含める（除外しない）
         const content = await this.app.vault.read(file as TFile);
-        const newContent = await this.processCompletedTodos(content);
+        const newContent = await this.processCompletedTodos(content, file.path);
 
         if (content !== newContent) {
           await this.app.vault.modify(file as TFile, newContent);
@@ -305,7 +303,10 @@ export default class LineTodoCollectorPlugin extends Plugin {
     }
   }
 
-  async processCompletedTodos(content: string): Promise<string> {
+  async processCompletedTodos(
+    content: string,
+    filePath: string
+  ): Promise<string> {
     const lines = content.split("\n");
     let modified = false;
     let result: string[] = [];
@@ -346,7 +347,10 @@ export default class LineTodoCollectorPlugin extends Plugin {
     // チェックボックスの完了状態を確認
     const hasCompletedTodo = lines.some((line) => line.startsWith("- [x]"));
     if (hasCompletedTodo) {
-      frontmatter.add_todo = true;
+      // 収集元ファイル（TODO.md以外）の場合のみadd_todoを付与
+      if (filePath !== OUTPUT_FILE) {
+        frontmatter.add_todo = true;
+      }
       modified = true;
 
       // 即時削除の場合は、完了したTODOを含む行を削除
@@ -376,7 +380,9 @@ export default class LineTodoCollectorPlugin extends Plugin {
               lines.slice(frontmatterStart + 1, frontmatterEnd).join("\n")
             ) || {};
         } catch {}
-        frontmatterObj.add_todo = true;
+        if (filePath !== OUTPUT_FILE) {
+          frontmatterObj.add_todo = true;
+        }
         const newFrontmatterLines = Object.entries(frontmatterObj).map(
           ([k, v]) => `${k}: ${v}`
         );
