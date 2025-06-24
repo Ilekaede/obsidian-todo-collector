@@ -6,6 +6,6 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 10
     reviewers:
-      - "a_sakura"
+      - "Ilekaede"
     assignees:
-      - "a_sakura"
+      - "Ilekaede"
