@@ -32,14 +32,20 @@ interface TodoCollectorSettings {
   completedTodoHandling: TodoHandling;
   autoDeleteHours: number;
   completedTodos: CompletedTodo[];
+  mcpServerUrl: string;
+  enableMcpClassification: boolean;
+  geminiApiKey: string;
 }
 
 const DEFAULT_SETTINGS: TodoCollectorSettings = {
   targetDirectories: [],
   todoTags: ["#TODO", "#t"],
-  completedTodoHandling: "immediate", // デフォルトは即時削除
+  completedTodoHandling: "immediate",
   autoDeleteHours: 24,
   completedTodos: [],
+  mcpServerUrl: "",
+  enableMcpClassification: false,
+  geminiApiKey: "",
 };
 
 const OUTPUT_FILE = "TODO.md";
@@ -57,11 +63,24 @@ export default class LineTodoCollectorPlugin extends Plugin {
     this.addRibbonIcon(RIBBON_ICON, "TODOを収集", () => {
       this.collectTodos();
     });
+
+    this.addRibbonIcon("brain", "MCP分類", () => {
+      this.classifyTodosWithMcp();
+    });
+
     this.addCommand({
       id: "collect-todos",
       name: "TODOを収集",
       callback: () => {
         this.collectTodos();
+      },
+    });
+
+    this.addCommand({
+      id: "classify-todos-with-mcp",
+      name: "MCPでTODOを分類",
+      callback: () => {
+        this.classifyTodosWithMcp();
       },
     });
     this.addSettingTab(new TodoCollectorSettingTab(this.app, this));
@@ -76,7 +95,6 @@ export default class LineTodoCollectorPlugin extends Plugin {
       this.app.vault.on("modify", async (file: TAbstractFile) => {
         if (!(file instanceof TFile) || !file.path.endsWith(".md")) return;
 
-        // TODOファイルも監視対象に含める（除外しない）
         const content = await this.app.vault.read(file as TFile);
         const newContent = await this.processCompletedTodos(content, file.path);
 
@@ -115,22 +133,11 @@ export default class LineTodoCollectorPlugin extends Plugin {
       // ディレクトリパスの正規化
       const normalizedDir = dir.trim();
 
-      // デバッグ用ログ
-      console.log(`Searching in directory: ${normalizedDir}`);
-
       // 該当ディレクトリ配下のファイルをフィルタリング
       const files = allFiles.filter((file) => {
         const filePath = file.path;
-        const isMatch = filePath
-          .toLowerCase()
-          .startsWith(normalizedDir.toLowerCase());
-        console.log(
-          `Checking file: ${filePath}, matches ${normalizedDir}: ${isMatch}`
-        );
-        return isMatch;
+        return filePath.toLowerCase().startsWith(normalizedDir.toLowerCase());
       });
-
-      console.log(`Found ${files.length} files in ${normalizedDir}`);
 
       for (const file of files) {
         // TODOファイルは除外
@@ -215,7 +222,7 @@ export default class LineTodoCollectorPlugin extends Plugin {
             newContent += "---\n";
             newContent += content;
           } else {
-            // 既存のフロントマターをパースしてadd_todo: trueを追加
+            // 既存のフロントマターを更新
             let frontmatterObj: Record<string, any> = {};
             try {
               frontmatterObj =
@@ -372,7 +379,7 @@ export default class LineTodoCollectorPlugin extends Plugin {
         result.push("---");
         result.push(...lines);
       } else {
-        // 既存のフロントマターをパースしてadd_todo: trueを追加
+        // 既存のフロントマターを更新
         let frontmatterObj: Record<string, any> = {};
         try {
           frontmatterObj =
@@ -402,6 +409,100 @@ export default class LineTodoCollectorPlugin extends Plugin {
 
   async saveSettings() {
     await this.saveData(this.settings);
+  }
+
+  // MCPサーバーとの通信機能
+  async testMcpConnection(): Promise<void> {
+    if (!this.settings.mcpServerUrl) {
+      new Notice("MCPサーバーURLが設定されていません");
+      return;
+    }
+
+    try {
+      new Notice("MCPサーバーとの接続をテスト中...");
+
+      const response = await fetch(this.settings.mcpServerUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "test",
+          content: "テスト用のTODO内容です",
+        }),
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        new Notice(
+          `✅ MCPサーバー接続成功: ${result.message || "接続確認完了"}`
+        );
+      } else {
+        new Notice(
+          `❌ MCPサーバー接続失敗: ${response.status} ${response.statusText}`
+        );
+      }
+    } catch (error) {
+      console.error("MCPサーバー接続エラー:", error);
+      new Notice(
+        `❌ MCPサーバー接続エラー: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+  }
+
+  async classifyTodosWithMcp(): Promise<void> {
+    if (!this.settings.enableMcpClassification || !this.settings.mcpServerUrl) {
+      new Notice("MCP分類機能が無効か、サーバーURLが設定されていません");
+      return;
+    }
+
+    try {
+      const todoFile = this.app.vault.getAbstractFileByPath(OUTPUT_FILE);
+      if (!todoFile || !(todoFile instanceof TFile)) {
+        new Notice("TODO.mdファイルが見つかりません");
+        return;
+      }
+
+      const todoContent = await this.app.vault.read(todoFile);
+
+      new Notice("MCPサーバーでTODOを分類中...");
+
+      const requestBody = {
+        action: "classify",
+        content: todoContent,
+        geminiApiKey: this.settings.geminiApiKey,
+      };
+
+      const response = await fetch(this.settings.mcpServerUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+
+        if (result.classifiedContent) {
+          await this.app.vault.modify(todoFile, result.classifiedContent);
+          new Notice("✅ TODOの分類が完了しました");
+        } else {
+          new Notice("⚠️ 分類結果が空でした");
+        }
+      } else {
+        new Notice(`❌ MCP分類失敗: ${response.status} ${response.statusText}`);
+      }
+    } catch (error) {
+      console.error("MCP分類エラー:", error);
+      new Notice(
+        `❌ MCP分類エラー: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
   }
 }
 
@@ -462,7 +563,6 @@ class TodoCollectorSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.completedTodoHandling = value as TodoHandling;
             await this.plugin.saveSettings();
-            // 設定画面を再描画して関連項目の表示/非表示を更新
             this.display();
           })
       );
@@ -482,6 +582,64 @@ class TodoCollectorSettingTab extends PluginSettingTab {
                 this.plugin.settings.autoDeleteHours = hours;
                 await this.plugin.saveSettings();
               }
+            })
+        );
+    }
+
+    // MCP分類機能
+    containerEl.createEl("h3", { text: "MCP分類機能" });
+
+    new Setting(containerEl)
+      .setName("MCP分類機能を有効にする")
+      .setDesc("TODOの自動分類・グループ化機能を有効にします")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.enableMcpClassification)
+          .onChange(async (value) => {
+            this.plugin.settings.enableMcpClassification = value;
+            await this.plugin.saveSettings();
+            this.display();
+          })
+      );
+
+    // MCP分類機能が有効な場合のみ表示
+    if (this.plugin.settings.enableMcpClassification) {
+      new Setting(containerEl)
+        .setName("MCPサーバーURL")
+        .setDesc("MCP分類サーバーのURLを指定してください")
+        .addText((text) =>
+          text
+            .setPlaceholder(
+              "https://your-mcp-server.your-subdomain.workers.dev"
+            )
+            .setValue(this.plugin.settings.mcpServerUrl)
+            .onChange(async (value) => {
+              this.plugin.settings.mcpServerUrl = value.trim();
+              await this.plugin.saveSettings();
+            })
+        );
+
+      // テストボタン
+      new Setting(containerEl)
+        .setName("MCPサーバー接続テスト")
+        .setDesc("MCPサーバーとの接続をテストします")
+        .addButton((button) =>
+          button.setButtonText("テスト実行").onClick(async () => {
+            await this.plugin.testMcpConnection();
+          })
+        );
+
+      // Gemini APIキー設定
+      new Setting(containerEl)
+        .setName("Gemini APIキー")
+        .setDesc("Gemini APIキーを設定してください（分類機能で使用）")
+        .addText((text) =>
+          text
+            .setPlaceholder("AIzaSy...")
+            .setValue(this.plugin.settings.geminiApiKey)
+            .onChange(async (value) => {
+              this.plugin.settings.geminiApiKey = value.trim();
+              await this.plugin.saveSettings();
             })
         );
     }
