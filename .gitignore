@@ -21,4 +21,7 @@ data.json
 .Spotlight-V100
 .Trashes
 ehthumbs.db
-Thumbs.db 
+Thumbs.db
+
+# Cloudflare Workers (機密情報を含むため除外)
+cloudflare-workers/ 
