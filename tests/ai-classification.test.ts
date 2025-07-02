@@ -301,11 +301,11 @@ describe("AI Classification Tests", () => {
     });
   });
 
-  describe("MCPサーバー統合テスト", () => {
-    test("MCPサーバー経由での分類テスト", async () => {
+  describe("プロキシサーバー統合テスト", () => {
+    test("プロキシサーバー経由での分類テスト", async () => {
       const testContent = "- [ ] テストタスク (test)";
 
-      // MCPサーバーのレスポンスをモック
+      // プロキシサーバーのレスポンスをモック
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: () =>
@@ -316,7 +316,7 @@ describe("AI Classification Tests", () => {
           }),
       } as Response);
 
-      // MCPサーバーへのリクエストをシミュレート
+      // プロキシサーバーへのリクエストをシミュレート
       const requestBody = {
         action: "classify",
         content: testContent,
