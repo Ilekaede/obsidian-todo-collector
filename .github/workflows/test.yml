@@ -26,8 +26,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run tests
+      - name: Run unit tests
         run: npm test
+
+      - name: Run AI classification tests
+        run: npm test -- --testPathPattern=ai-classification.test.ts
+
+      - name: Run integration tests
+        run: npm test -- --testPathPattern=integration.test.ts
 
       - name: Run tests with coverage
         run: npm run test:coverage
@@ -39,3 +45,31 @@ jobs:
           flags: unittests
           name: codecov-umbrella
           fail_ci_if_error: false
+
+  # AI分類機能の専用テストジョブ
+  ai-classification:
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run AI classification tests with detailed output
+        run: |
+          npm test -- --testPathPattern=ai-classification.test.ts --verbose --detectOpenHandles
+        env:
+          CI: true
+
+      - name: Test MCP server integration
+        run: |
+          echo "Testing MCP server integration..."
+          npm test -- --testNamePattern="MCPサーバー統合テスト" --verbose
