@@ -32,8 +32,8 @@ interface TodoCollectorSettings {
   completedTodoHandling: TodoHandling;
   autoDeleteHours: number;
   completedTodos: CompletedTodo[];
-  mcpServerUrl: string;
-  enableMcpClassification: boolean;
+  todoClassificationProxyUrl: string;
+  enableAiClassification: boolean;
   geminiApiKey: string;
 }
 
@@ -43,8 +43,8 @@ const DEFAULT_SETTINGS: TodoCollectorSettings = {
   completedTodoHandling: "immediate",
   autoDeleteHours: 24,
   completedTodos: [],
-  mcpServerUrl: "",
-  enableMcpClassification: false,
+  todoClassificationProxyUrl: "",
+  enableAiClassification: false,
   geminiApiKey: "",
 };
 
@@ -64,8 +64,8 @@ export default class LineTodoCollectorPlugin extends Plugin {
       this.collectTodos();
     });
 
-    this.addRibbonIcon("brain", "MCP分類", () => {
-      this.classifyTodosWithMcp();
+    this.addRibbonIcon("brain", "プロキシ分類", () => {
+      this.classifyTodosWithAi();
     });
 
     this.addCommand({
@@ -80,7 +80,7 @@ export default class LineTodoCollectorPlugin extends Plugin {
       id: "classify-todos-with-mcp",
       name: "MCPでTODOを分類",
       callback: () => {
-        this.classifyTodosWithMcp();
+        this.classifyTodosWithAi();
       },
     });
     this.addSettingTab(new TodoCollectorSettingTab(this.app, this));
@@ -411,17 +411,17 @@ export default class LineTodoCollectorPlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
-  // MCPサーバーとの通信機能
-  async testMcpConnection(): Promise<void> {
-    if (!this.settings.mcpServerUrl) {
-      new Notice("MCPサーバーURLが設定されていません");
+  // プロキシサーバーとの通信機能
+  async testProxyConnection(): Promise<void> {
+    if (!this.settings.todoClassificationProxyUrl) {
+      new Notice("プロキシサーバーURLが設定されていません");
       return;
     }
 
     try {
-      new Notice("MCPサーバーとの接続をテスト中...");
+      new Notice("プロキシサーバーとの接続をテスト中...");
 
-      const response = await fetch(this.settings.mcpServerUrl, {
+      const response = await fetch(this.settings.todoClassificationProxyUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -435,26 +435,26 @@ export default class LineTodoCollectorPlugin extends Plugin {
       if (response.ok) {
         const result = await response.json();
         new Notice(
-          `✅ MCPサーバー接続成功: ${result.message || "接続確認完了"}`
+          `✅ プロキシサーバー接続成功: ${result.message || "接続確認完了"}`
         );
       } else {
         new Notice(
-          `❌ MCPサーバー接続失敗: ${response.status} ${response.statusText}`
+          `❌ プロキシサーバー接続失敗: ${response.status} ${response.statusText}`
         );
       }
     } catch (error) {
-      console.error("MCPサーバー接続エラー:", error);
+      console.error("プロキシサーバー接続エラー:", error);
       new Notice(
-        `❌ MCPサーバー接続エラー: ${
+        `❌ プロキシサーバー接続エラー: ${
           error instanceof Error ? error.message : String(error)
         }`
       );
     }
   }
 
-  async classifyTodosWithMcp(): Promise<void> {
-    if (!this.settings.enableMcpClassification || !this.settings.mcpServerUrl) {
-      new Notice("MCP分類機能が無効か、サーバーURLが設定されていません");
+  async classifyTodosWithAi(): Promise<void> {
+    if (!this.settings.enableAiClassification || !this.settings.todoClassificationProxyUrl) {
+      new Notice("AI分類機能が無効か、サーバーURLが設定されていません");
       return;
     }
 
@@ -467,7 +467,7 @@ export default class LineTodoCollectorPlugin extends Plugin {
 
       const todoContent = await this.app.vault.read(todoFile);
 
-      new Notice("MCPサーバーでTODOを分類中...");
+      new Notice("プロキシサーバーでTODOを分類中...");
 
       const requestBody = {
         action: "classify",
@@ -475,7 +475,7 @@ export default class LineTodoCollectorPlugin extends Plugin {
         geminiApiKey: this.settings.geminiApiKey,
       };
 
-      const response = await fetch(this.settings.mcpServerUrl, {
+      const response = await fetch(this.settings.todoClassificationProxyUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -493,12 +493,12 @@ export default class LineTodoCollectorPlugin extends Plugin {
           new Notice("⚠️ 分類結果が空でした");
         }
       } else {
-        new Notice(`❌ MCP分類失敗: ${response.status} ${response.statusText}`);
+        new Notice(`❌ プロキシ分類失敗: ${response.status} ${response.statusText}`);
       }
     } catch (error) {
-      console.error("MCP分類エラー:", error);
+      console.error("プロキシ分類エラー:", error);
       new Notice(
-        `❌ MCP分類エラー: ${
+        `❌ プロキシ分類エラー: ${
           error instanceof Error ? error.message : String(error)
         }`
       );
@@ -586,46 +586,46 @@ class TodoCollectorSettingTab extends PluginSettingTab {
         );
     }
 
-    // MCP分類機能
-    containerEl.createEl("h3", { text: "MCP分類機能" });
+    // AI分類機能
+    containerEl.createEl("h3", { text: "AI分類機能" });
 
     new Setting(containerEl)
-      .setName("MCP分類機能を有効にする")
+      .setName("AI分類機能を有効にする")
       .setDesc("TODOの自動分類・グループ化機能を有効にします")
       .addToggle((toggle) =>
         toggle
-          .setValue(this.plugin.settings.enableMcpClassification)
+          .setValue(this.plugin.settings.enableAiClassification)
           .onChange(async (value) => {
-            this.plugin.settings.enableMcpClassification = value;
+            this.plugin.settings.enableAiClassification = value;
             await this.plugin.saveSettings();
             this.display();
           })
       );
 
-    // MCP分類機能が有効な場合のみ表示
-    if (this.plugin.settings.enableMcpClassification) {
+    // AI分類機能が有効な場合のみ表示
+    if (this.plugin.settings.enableAiClassification) {
       new Setting(containerEl)
-        .setName("MCPサーバーURL")
-        .setDesc("MCP分類サーバーのURLを指定してください")
+        .setName("プロキシサーバーURL")
+        .setDesc("プロキシ分類サーバーのURLを指定してください")
         .addText((text) =>
           text
             .setPlaceholder(
               "https://your-mcp-server.your-subdomain.workers.dev"
             )
-            .setValue(this.plugin.settings.mcpServerUrl)
+            .setValue(this.plugin.settings.todoClassificationProxyUrl)
             .onChange(async (value) => {
-              this.plugin.settings.mcpServerUrl = value.trim();
+              this.plugin.settings.todoClassificationProxyUrl = value.trim();
               await this.plugin.saveSettings();
             })
         );
 
       // テストボタン
       new Setting(containerEl)
-        .setName("MCPサーバー接続テスト")
-        .setDesc("MCPサーバーとの接続をテストします")
+        .setName("プロキシサーバー接続テスト")
+        .setDesc("プロキシサーバーとの接続をテストします")
         .addButton((button) =>
           button.setButtonText("テスト実行").onClick(async () => {
-            await this.plugin.testMcpConnection();
+            await this.plugin.testProxyConnection();
           })
         );
 
