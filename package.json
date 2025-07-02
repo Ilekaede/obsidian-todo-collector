@@ -9,7 +9,11 @@
     "version": "node version-bump.mjs && git add manifest.json versions.json",
     "test": "jest",
     "test:watch": "jest --watch",
-    "test:coverage": "jest --coverage"
+    "test:coverage": "jest --coverage",
+    "test:ai": "jest --testPathPattern=ai-classification.test.ts --verbose",
+    "test:integration": "jest --testPathPattern=integration.test.ts --verbose",
+    "test:unit": "jest --testPathPattern=main.test.ts --verbose",
+    "test:ci": "jest --ci --coverage --verbose --detectOpenHandles"
   },
   "keywords": [
     "obsidian",
