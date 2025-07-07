@@ -326,7 +326,7 @@ export default class LineTodoCollectorPlugin extends Plugin {
       await vault.create(outputFilePath, finalContent);
     }
   }
-
+  // 完了todoの掃除
   async processCompletedTodos(
     content: string,
     filePath: string
