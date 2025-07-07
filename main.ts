@@ -35,6 +35,7 @@ interface TodoCollectorSettings {
   todoClassificationProxyUrl: string;
   enableAiClassification: boolean;
   geminiApiKey: string;
+  outputFilePath: string;
 }
 
 const DEFAULT_SETTINGS: TodoCollectorSettings = {
@@ -46,9 +47,9 @@ const DEFAULT_SETTINGS: TodoCollectorSettings = {
   todoClassificationProxyUrl: "",
   enableAiClassification: false,
   geminiApiKey: "",
+  outputFilePath: "TODO.md",
 };
 
-const OUTPUT_FILE = "TODO.md";
 const RIBBON_ICON = "check-square";
 
 export default class LineTodoCollectorPlugin extends Plugin {
@@ -108,7 +109,17 @@ export default class LineTodoCollectorPlugin extends Plugin {
   async collectTodos() {
     const { vault } = this.app;
     const settings = this.settings;
-    const todoFile = vault.getAbstractFileByPath(OUTPUT_FILE);
+
+    // 設定された出力ファイルパスを使用
+    const outputFilePath = settings.outputFilePath || "TODO.md";
+    const todoFile = vault.getAbstractFileByPath(outputFilePath);
+
+    // ファイルが存在しない場合のエラーハンドリング
+    if (!todoFile) {
+      new Notice(`出力ファイルが存在しません: ${outputFilePath}`);
+      return;
+    }
+
     const existingTasks = new Set<string>();
     const newTasks: string[] = [];
     const now = Date.now();
@@ -136,15 +147,21 @@ export default class LineTodoCollectorPlugin extends Plugin {
       // 該当ディレクトリ配下のファイルをフィルタリング
       const files = allFiles.filter((file) => {
         const filePath = file.path;
-        return filePath.toLowerCase().startsWith(normalizedDir.toLowerCase());
+        // 出力ファイルは除外
+        if (filePath === outputFilePath) {
+          return false;
+        }
+        // ディレクトリパスで始まるファイルのみを対象とする
+        // ディレクトリセパレータを考慮して正確に比較
+        const normalizedDirWithSlash = normalizedDir.endsWith("/")
+          ? normalizedDir
+          : normalizedDir + "/";
+        return filePath
+          .toLowerCase()
+          .startsWith(normalizedDirWithSlash.toLowerCase());
       });
 
       for (const file of files) {
-        // TODOファイルは除外
-        if (file.path === OUTPUT_FILE) {
-          continue;
-        }
-
         const content = await vault.read(file);
         const lines = content.split("\n");
         let fileModified = false;
@@ -306,10 +323,10 @@ export default class LineTodoCollectorPlugin extends Plugin {
     } else {
       // 新規作成の場合
       finalContent = newTasks.join("\n");
-      await vault.create("TODO.md", finalContent);
+      await vault.create(outputFilePath, finalContent);
     }
   }
-
+  // 完了todoの掃除
   async processCompletedTodos(
     content: string,
     filePath: string
@@ -354,8 +371,9 @@ export default class LineTodoCollectorPlugin extends Plugin {
     // チェックボックスの完了状態を確認
     const hasCompletedTodo = lines.some((line) => line.startsWith("- [x]"));
     if (hasCompletedTodo) {
-      // 収集元ファイル（TODO.md以外）の場合のみadd_todoを付与
-      if (filePath !== OUTPUT_FILE) {
+      // 収集元ファイル（出力ファイル以外）の場合のみadd_todoを付与
+      const outputFilePath = this.settings.outputFilePath || "TODO.md";
+      if (filePath !== outputFilePath) {
         frontmatter.add_todo = true;
       }
       modified = true;
@@ -387,7 +405,8 @@ export default class LineTodoCollectorPlugin extends Plugin {
               lines.slice(frontmatterStart + 1, frontmatterEnd).join("\n")
             ) || {};
         } catch {}
-        if (filePath !== OUTPUT_FILE) {
+        const outputFilePath = this.settings.outputFilePath || "TODO.md";
+        if (filePath !== outputFilePath) {
           frontmatterObj.add_todo = true;
         }
         const newFrontmatterLines = Object.entries(frontmatterObj).map(
@@ -453,19 +472,46 @@ export default class LineTodoCollectorPlugin extends Plugin {
   }
 
   async classifyTodosWithAi(): Promise<void> {
-    if (!this.settings.enableAiClassification || !this.settings.todoClassificationProxyUrl) {
+    if (
+      !this.settings.enableAiClassification ||
+      !this.settings.todoClassificationProxyUrl
+    ) {
       new Notice("AI分類機能が無効か、サーバーURLが設定されていません");
       return;
     }
 
     try {
-      const todoFile = this.app.vault.getAbstractFileByPath(OUTPUT_FILE);
+      const outputFilePath = this.settings.outputFilePath || "TODO.md";
+      const todoFile = this.app.vault.getAbstractFileByPath(outputFilePath);
+
       if (!todoFile || !(todoFile instanceof TFile)) {
-        new Notice("TODO.mdファイルが見つかりません");
+        new Notice(`${outputFilePath}ファイルが見つかりません`);
         return;
       }
 
       const todoContent = await this.app.vault.read(todoFile);
+
+      // ファイル内容が空または有効なTODOアイテムが含まれていない場合のチェック
+      if (!todoContent || todoContent.trim() === "") {
+        new Notice("TODOを集めるファイルの中身が空です。");
+        return;
+      }
+
+      // 有効なTODOアイテム（中身があるもの）が含まれているかチェック
+      const lines = todoContent.split("\n");
+      const hasValidTodoItems = lines.some((line) => {
+        const trimmedLine = line.trim();
+        return (
+          (trimmedLine.startsWith("- [ ]") ||
+            trimmedLine.startsWith("- [x]")) &&
+          trimmedLine.length > 5
+        ); // "- [ ]" は5文字なので、それより長い場合のみ有効
+      });
+
+      if (!hasValidTodoItems) {
+        new Notice("TODOを集めるファイルの中身が空です。");
+        return;
+      }
 
       new Notice("プロキシサーバーでTODOを分類中...");
 
@@ -493,7 +539,18 @@ export default class LineTodoCollectorPlugin extends Plugin {
           new Notice("⚠️ 分類結果が空でした");
         }
       } else {
-        new Notice(`❌ プロキシ分類失敗: ${response.status} ${response.statusText}`);
+        // エラーレスポンスの詳細を取得
+        let errorDetail = "";
+        try {
+          const errorResponse = await response.text();
+          errorDetail = ` - エラー詳細: ${errorResponse}`;
+        } catch (e) {
+          errorDetail = " - エラー詳細の取得に失敗";
+        }
+
+        new Notice(
+          `❌ プロキシ分類失敗: ${response.status} ${response.statusText}${errorDetail}`
+        );
       }
     } catch (error) {
       console.error("プロキシ分類エラー:", error);
@@ -519,9 +576,7 @@ class TodoCollectorSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("収集対象ディレクトリ")
-      .setDesc(
-        "TODOを収集するディレクトリを指定してください（カンマ区切りで複数指定可能）"
-      )
+      .setDesc("TODOを収集するディレクトリを指定（カンマ区切りで複数可）")
       .addText((text) =>
         text
           .setPlaceholder("例: LINE, プロジェクト")
@@ -535,10 +590,21 @@ class TodoCollectorSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName("出力ファイルパス")
+      .setDesc("TODOを出力するVault配下のファイルパスを指定")
+      .addText((text) =>
+        text
+          .setPlaceholder(".md, path/todo.md")
+          .setValue(this.plugin.settings.outputFilePath)
+          .onChange(async (value) => {
+            this.plugin.settings.outputFilePath = value.trim();
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
       .setName("TODOタグ")
-      .setDesc(
-        "TODOとして認識するタグを指定してください（カンマ区切りで複数指定可能）"
-      )
+      .setDesc("TODOとして認識するタグを指定（カンマ区切りで複数可）")
       .addText((text) =>
         text
           .setPlaceholder("例: #TODO, #t")
@@ -553,7 +619,7 @@ class TodoCollectorSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("完了済みTODOの処理")
-      .setDesc("完了済みTODOの処理方法を選択してください")
+      .setDesc("完了済みTODOの処理方法を選択")
       .addDropdown((dropdown) =>
         dropdown
           .addOption("immediate", "即時削除")
@@ -571,7 +637,7 @@ class TodoCollectorSettingTab extends PluginSettingTab {
     if (this.plugin.settings.completedTodoHandling === "delayed") {
       new Setting(containerEl)
         .setName("完了したTODOの削除時間")
-        .setDesc("完了したTODOを何時間後に削除するか指定してください")
+        .setDesc("完了TODOを何時間後に削除するか指定")
         .addText((text) =>
           text
             .setPlaceholder("24")
@@ -606,7 +672,7 @@ class TodoCollectorSettingTab extends PluginSettingTab {
     if (this.plugin.settings.enableAiClassification) {
       new Setting(containerEl)
         .setName("プロキシサーバーURL")
-        .setDesc("プロキシ分類サーバーのURLを指定してください")
+        .setDesc("分類サーバーのURLを指定")
         .addText((text) =>
           text
             .setPlaceholder(
@@ -632,7 +698,7 @@ class TodoCollectorSettingTab extends PluginSettingTab {
       // Gemini APIキー設定
       new Setting(containerEl)
         .setName("Gemini APIキー")
-        .setDesc("Gemini APIキーを設定してください（分類機能で使用）")
+        .setDesc("Google Gemini APIキーを設定")
         .addText((text) =>
           text
             .setPlaceholder("AIzaSy...")
