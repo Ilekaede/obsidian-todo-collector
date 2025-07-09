@@ -75,7 +75,7 @@ const DEFAULT_SETTINGS: TodoCollectorSettings = {
   lastClassificationTime: 0,
 };
 
-const RIBBON_ICON = "brain";
+const RIBBON_ICON = "list";
 
 // サーバで使われる既定のグループ名
 const DEFAULT_GROUPS = [
@@ -93,10 +93,6 @@ export default class LineTodoCollectorPlugin extends Plugin {
 
   async onload() {
     await this.loadSettings();
-    addIcon(
-      RIBBON_ICON,
-      `<svg viewBox="0 0 100 100"><rect x="15" y="15" width="70" height="70" rx="15" fill="none" stroke="currentColor" stroke-width="10"/><polyline points="30,55 45,70 70,40" fill="none" stroke="currentColor" stroke-width="10"/></svg>`
-    );
     this.addRibbonIcon(RIBBON_ICON, "TODOを収集・分類", () => {
       this.collectAndClassifyTodos();
     });
