@@ -36,6 +36,8 @@ interface TodoCollectorSettings {
   enableAiClassification: boolean;
   geminiApiKey: string;
   outputFilePath: string;
+  protectClassifiedFiles: boolean;
+  lastClassificationTime: number;
 }
 
 const DEFAULT_SETTINGS: TodoCollectorSettings = {
@@ -48,9 +50,22 @@ const DEFAULT_SETTINGS: TodoCollectorSettings = {
   enableAiClassification: false,
   geminiApiKey: "",
   outputFilePath: "TODO.md",
+  protectClassifiedFiles: false,
+  lastClassificationTime: 0,
 };
 
-const RIBBON_ICON = "check-square";
+const RIBBON_ICON = "brain";
+
+// サーバで使われる既定のグループ名
+const DEFAULT_GROUPS = [
+  "買い物関連",
+  "開発関連",
+  "学習関連",
+  "家事関連",
+  "仕事関連",
+  "健康関連",
+  "未分類",
+];
 
 export default class LineTodoCollectorPlugin extends Plugin {
   settings: TodoCollectorSettings = DEFAULT_SETTINGS;
@@ -61,35 +76,19 @@ export default class LineTodoCollectorPlugin extends Plugin {
       RIBBON_ICON,
       `<svg viewBox="0 0 100 100"><rect x="15" y="15" width="70" height="70" rx="15" fill="none" stroke="currentColor" stroke-width="10"/><polyline points="30,55 45,70 70,40" fill="none" stroke="currentColor" stroke-width="10"/></svg>`
     );
-    this.addRibbonIcon(RIBBON_ICON, "TODOを収集", () => {
-      this.collectTodos();
-    });
-
-    this.addRibbonIcon("brain", "プロキシ分類", () => {
-      this.classifyTodosWithAi();
+    this.addRibbonIcon(RIBBON_ICON, "TODOを収集・分類", () => {
+      this.collectAndClassifyTodos();
     });
 
     this.addCommand({
-      id: "collect-todos",
-      name: "TODOを収集",
+      id: "collect-and-classify-todos",
+      name: "TODOを収集・分類",
       callback: () => {
-        this.collectTodos();
+        this.collectAndClassifyTodos();
       },
     });
 
-    this.addCommand({
-      id: "classify-todos-with-mcp",
-      name: "MCPでTODOを分類",
-      callback: () => {
-        this.classifyTodosWithAi();
-      },
-    });
     this.addSettingTab(new TodoCollectorSettingTab(this.app, this));
-
-    // 定期的にTODOを収集
-    this.registerInterval(
-      window.setInterval(() => this.collectTodos(), 5 * 60 * 1000)
-    );
 
     // チェックボックスの状態変更を監視
     this.registerEvent(
@@ -118,6 +117,23 @@ export default class LineTodoCollectorPlugin extends Plugin {
     if (!todoFile) {
       new Notice(`出力ファイルが存在しません: ${outputFilePath}`);
       return;
+    }
+
+    // 分類済みファイル保護機能
+    if (
+      settings.protectClassifiedFiles &&
+      settings.lastClassificationTime > 0
+    ) {
+      const now = Date.now();
+      const timeSinceClassification = now - settings.lastClassificationTime;
+      const protectionHours = 24; // 24時間保護
+
+      if (timeSinceClassification < protectionHours * 60 * 60 * 1000) {
+        new Notice(
+          `分類済みファイルは保護されています（${protectionHours}時間以内）`
+        );
+        return;
+      }
     }
 
     const existingTasks = new Set<string>();
@@ -326,6 +342,7 @@ export default class LineTodoCollectorPlugin extends Plugin {
       await vault.create(outputFilePath, finalContent);
     }
   }
+
   // 完了todoの掃除
   async processCompletedTodos(
     content: string,
@@ -471,7 +488,204 @@ export default class LineTodoCollectorPlugin extends Plugin {
     }
   }
 
-  async classifyTodosWithAi(): Promise<void> {
+  // 既存の分類構造と新規TODOを分離するメソッド
+  separateExistingAndNewTodos(content: string): {
+    existingGroups: Record<string, string[]>;
+    newTodos: string[];
+  } {
+    const lines = content.split("\n");
+    const existingGroups: Record<string, string[]> = {};
+    const newTodos: string[] = [];
+    let currentGroup = "";
+    let inGroup = false;
+
+    // 既定グループを初期化
+    for (const group of DEFAULT_GROUPS) {
+      existingGroups[group] = [];
+    }
+
+    for (const line of lines) {
+      const trimmedLine = line.trim();
+
+      // グループヘッダー（## で始まる行）を検出
+      if (trimmedLine.startsWith("## ")) {
+        currentGroup = trimmedLine.substring(3).trim();
+        if (!existingGroups[currentGroup]) {
+          existingGroups[currentGroup] = [];
+        }
+        inGroup = true;
+        continue;
+      }
+
+      // TODOアイテムを検出
+      if (trimmedLine.startsWith("- [ ]") || trimmedLine.startsWith("- [x]")) {
+        if (inGroup && currentGroup) {
+          // 既存のグループに属するTODO
+          existingGroups[currentGroup].push(line);
+          console.log("追加されました！");
+        } else {
+          // グループに属していないTODOは未分類グループに追加
+          if (!existingGroups["未分類"]) {
+            existingGroups["未分類"] = [];
+          }
+          existingGroups["未分類"].push(line);
+          console.log("追加されませんでした");
+        }
+      } else if (trimmedLine === "" && inGroup) {
+        // 空行でグループ終了
+        inGroup = false;
+        currentGroup = "";
+      }
+    }
+
+    console.log("存在するグループ:", existingGroups);
+
+    return { existingGroups, newTodos };
+  }
+
+  // 既存の分類構造と新しい分類結果を統合するメソッド
+  mergeExistingAndNewClassification(
+    existingGroups: Record<string, string[]>,
+    newClassification: string
+  ): string {
+    // 新規分類結果をパース
+    const newGroups: Record<string, string[]> = {};
+    let currentGroup = "";
+    let inGroup = false;
+    const newLines = newClassification.split("\n");
+    for (const line of newLines) {
+      const trimmedLine = line.trim();
+      if (trimmedLine.startsWith("# ")) {
+        currentGroup = trimmedLine.substring(2).trim();
+        if (!newGroups[currentGroup]) {
+          newGroups[currentGroup] = [];
+        }
+        inGroup = true;
+        continue;
+      } else if (trimmedLine.startsWith("## ")) {
+        currentGroup = trimmedLine.substring(3).trim();
+        if (!newGroups[currentGroup]) {
+          newGroups[currentGroup] = [];
+        }
+        inGroup = true;
+        continue;
+      }
+      if (
+        (trimmedLine.startsWith("- [ ]") || trimmedLine.startsWith("- [x]")) &&
+        currentGroup
+      ) {
+        newGroups[currentGroup].push(line);
+      } else if (trimmedLine === "" && inGroup) {
+        inGroup = false;
+        currentGroup = "";
+      }
+    }
+
+    // console.log("newGroups", newGroups); OK
+
+    let result: string[] = [];
+    for (const groupName of DEFAULT_GROUPS) {
+      console.log(
+        "check",
+        existingGroups[groupName],
+        groupName,
+        newGroups[groupName],
+        groupName
+      );
+      const mergedTodos = [
+        ...(existingGroups[groupName] || []),
+        ...(newGroups[groupName] || []),
+      ];
+      if (mergedTodos.length > 0) {
+        result.push(`## ${groupName}`);
+        result.push("");
+        result.push(...mergedTodos);
+        result.push("");
+      }
+    }
+    // console.log("result", result);
+
+    // 既定グループ以外の新規グループも出力
+    for (const groupName of Object.keys(newGroups)) {
+      if (
+        !DEFAULT_GROUPS.includes(groupName) &&
+        newGroups[groupName].length > 0
+      ) {
+        result.push(`## ${groupName}`);
+        result.push("");
+        result.push(...newGroups[groupName]);
+        result.push("");
+      }
+    }
+    console.log("result", result);
+    return result.join("\n");
+  }
+
+  // グループ構造をコンテンツに変換するメソッド
+  convertGroupsToContent(groups: Record<string, string[]>): string {
+    const result: string[] = [];
+    for (const [groupName, todos] of Object.entries(groups)) {
+      if (todos.length > 0) {
+        result.push(`## ${groupName}`);
+        result.push("");
+        result.push(...todos);
+        result.push("");
+      }
+    }
+    return result.join("\n");
+  }
+
+  // 統合された収集・分類機能
+  async collectAndClassifyTodos(): Promise<void> {
+    try {
+      new Notice("TODOを収集中...");
+
+      // 収集処理を実行（ファイル出力なし）
+      const collectedTodos = await this.collectTodosWithoutFileOutput();
+
+      if (collectedTodos.length === 0) {
+        new Notice("収集されたTODOがありません");
+        return;
+      }
+
+      new Notice(`✅ ${collectedTodos.length}個のTODOを収集しました`);
+
+      // AI分類機能が有効な場合は分類を実行
+      if (
+        this.settings.enableAiClassification &&
+        this.settings.todoClassificationProxyUrl
+      ) {
+        new Notice("AI分類を実行中...");
+        await this.classifyNewTodosWithAi(collectedTodos);
+      } else {
+        // AI分類機能が無効な場合は、収集したTODOをそのままファイルに出力
+        const outputFilePath = this.settings.outputFilePath || "TODO.md";
+        const todoContent = collectedTodos.join("\n");
+
+        // ファイルを作成または更新
+        const todoFile = this.app.vault.getAbstractFileByPath(outputFilePath);
+        if (todoFile && todoFile instanceof TFile) {
+          await this.app.vault.modify(todoFile, todoContent);
+        } else {
+          await this.app.vault.create(outputFilePath, todoContent);
+        }
+
+        new Notice(
+          "AI分類機能が無効です。収集したTODOをファイルに出力しました。"
+        );
+      }
+    } catch (error) {
+      console.error("TODO収集・分類エラー:", error);
+      new Notice(
+        `❌ TODO収集・分類エラー: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+  }
+
+  // 新規TODOのみを分類するメソッド
+  async classifyNewTodosWithAi(newTodos: string[]): Promise<void> {
     if (
       !this.settings.enableAiClassification ||
       !this.settings.todoClassificationProxyUrl
@@ -484,40 +698,22 @@ export default class LineTodoCollectorPlugin extends Plugin {
       const outputFilePath = this.settings.outputFilePath || "TODO.md";
       const todoFile = this.app.vault.getAbstractFileByPath(outputFilePath);
 
-      if (!todoFile || !(todoFile instanceof TFile)) {
-        new Notice(`${outputFilePath}ファイルが見つかりません`);
-        return;
+      // 既存の分類構造を読み込み
+      let existingGroups: Record<string, string[]> = {};
+      if (todoFile && todoFile instanceof TFile) {
+        const existingContent = await this.app.vault.read(todoFile);
+        if (existingContent && existingContent.trim() !== "") {
+          const parsed = this.separateExistingAndNewTodos(existingContent);
+          existingGroups = parsed.existingGroups;
+        }
       }
 
-      const todoContent = await this.app.vault.read(todoFile);
-
-      // ファイル内容が空または有効なTODOアイテムが含まれていない場合のチェック
-      if (!todoContent || todoContent.trim() === "") {
-        new Notice("TODOを集めるファイルの中身が空です。");
-        return;
-      }
-
-      // 有効なTODOアイテム（中身があるもの）が含まれているかチェック
-      const lines = todoContent.split("\n");
-      const hasValidTodoItems = lines.some((line) => {
-        const trimmedLine = line.trim();
-        return (
-          (trimmedLine.startsWith("- [ ]") ||
-            trimmedLine.startsWith("- [x]")) &&
-          trimmedLine.length > 5
-        ); // "- [ ]" は5文字なので、それより長い場合のみ有効
-      });
-
-      if (!hasValidTodoItems) {
-        new Notice("TODOを集めるファイルの中身が空です。");
-        return;
-      }
-
-      new Notice("プロキシサーバーでTODOを分類中...");
+      new Notice(`新規TODO ${newTodos.length}個を分類中...`);
 
       const requestBody = {
         action: "classify",
-        content: todoContent,
+        content: newTodos.join("\n"),
+        existingGroups: existingGroups,
         geminiApiKey: this.settings.geminiApiKey,
       };
 
@@ -528,15 +724,51 @@ export default class LineTodoCollectorPlugin extends Plugin {
         },
         body: JSON.stringify(requestBody),
       });
-
       if (response.ok) {
         const result = await response.json();
+        console.log("response", result);
 
         if (result.classifiedContent) {
-          await this.app.vault.modify(todoFile, result.classifiedContent);
-          new Notice("✅ TODOの分類が完了しました");
-        } else {
-          new Notice("⚠️ 分類結果が空でした");
+          // 既存の分類構造と新しい分類結果を統合
+          const mergedContent = this.mergeExistingAndNewClassification(
+            existingGroups,
+            result.classifiedContent
+          );
+
+          // 統合結果が空の場合は、既存のTODOを保持しつつ新規TODOを追加
+          console.log("trim", mergedContent.trim());
+          if (!mergedContent || mergedContent.trim() === "") {
+            // 既存のTODOを保持し、新規TODOを「未分類」グループに追加
+            if (!existingGroups["未分類"]) {
+              existingGroups["未分類"] = [];
+            }
+            existingGroups["未分類"].push(...newTodos);
+            // console.log("eG", existingGroups);
+
+            const fallbackContent = this.convertGroupsToContent(existingGroups);
+
+            // ファイルを作成または更新
+            if (todoFile && todoFile instanceof TFile) {
+              await this.app.vault.modify(todoFile, fallbackContent);
+            } else {
+              await this.app.vault.create(outputFilePath, fallbackContent);
+            }
+            new Notice(
+              "⚠️ 統合結果が空でした。既存のTODOを保持し、新規TODOを未分類グループに追加しました。"
+            );
+          } else {
+            // ファイルを作成または更新
+            if (todoFile && todoFile instanceof TFile) {
+              await this.app.vault.modify(todoFile, mergedContent);
+            } else {
+              await this.app.vault.create(outputFilePath, mergedContent);
+            }
+
+            // 分類完了時刻を記録
+            this.settings.lastClassificationTime = Date.now();
+            await this.saveSettings();
+            new Notice("✅ TODOの分類が完了しました");
+          }
         }
       } else {
         // エラーレスポンスの詳細を取得
@@ -560,6 +792,142 @@ export default class LineTodoCollectorPlugin extends Plugin {
         }`
       );
     }
+  }
+
+  // ファイル出力なしでTODOを収集するメソッド
+  async collectTodosWithoutFileOutput(): Promise<string[]> {
+    const { vault } = this.app;
+    const settings = this.settings;
+    const collectedTodos: string[] = [];
+    const existingTasks = new Set<string>();
+
+    // 各ディレクトリからTODOを収集
+    const allFiles = vault.getMarkdownFiles();
+    for (const dir of settings.targetDirectories) {
+      // ディレクトリパスの正規化
+      const normalizedDir = dir.trim();
+
+      // 該当ディレクトリ配下のファイルをフィルタリング
+      const files = allFiles.filter((file) => {
+        const filePath = file.path;
+        // 出力ファイルは除外
+        const outputFilePath = settings.outputFilePath || "TODO.md";
+        if (filePath === outputFilePath) {
+          return false;
+        }
+        // ディレクトリパスで始まるファイルのみを対象とする
+        const normalizedDirWithSlash = normalizedDir.endsWith("/")
+          ? normalizedDir
+          : normalizedDir + "/";
+        return filePath
+          .toLowerCase()
+          .startsWith(normalizedDirWithSlash.toLowerCase());
+      });
+
+      for (const file of files) {
+        const content = await vault.read(file);
+        const lines = content.split("\n");
+        let fileModified = false;
+        let newContent = "";
+
+        // フロントマターの解析
+        let inFrontmatter = false;
+        let frontmatterStart = -1;
+        let frontmatterEnd = -1;
+        let hasFrontmatter = false;
+        let currentFrontmatter: TodoFrontmatter = {};
+
+        // フロントマターの位置を特定
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].trim() === "---") {
+            if (!inFrontmatter) {
+              inFrontmatter = true;
+              frontmatterStart = i;
+            } else {
+              frontmatterEnd = i;
+              hasFrontmatter = true;
+              break;
+            }
+          }
+        }
+
+        // 既存のフロントマターを解析
+        if (hasFrontmatter) {
+          const frontmatterContent = lines
+            .slice(frontmatterStart + 1, frontmatterEnd)
+            .join("\n");
+          try {
+            currentFrontmatter = parseYaml(
+              frontmatterContent
+            ) as TodoFrontmatter;
+          } catch (e) {
+            console.error("Failed to parse frontmatter:", e);
+          }
+        }
+
+        // add_todoがtrueの場合はスキップ
+        if (currentFrontmatter.add_todo) {
+          continue;
+        }
+
+        let todoFound = false;
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          // 各タグパターンでマッチングを試みる
+          for (const tag of settings.todoTags) {
+            const regex = new RegExp(`^\\s*${tag}\\s+(.+)$`);
+            const match = line.match(regex);
+            if (match) {
+              todoFound = true;
+              const todoText = match[1];
+
+              const newTask = `- [ ] ${todoText} (${file.basename})`;
+
+              // 重複チェック
+              if (!existingTasks.has(newTask)) {
+                collectedTodos.push(newTask);
+                existingTasks.add(newTask);
+              }
+              break;
+            }
+          }
+        }
+
+        // TODOが見つかった場合、フロントマターを更新
+        if (todoFound) {
+          if (!hasFrontmatter) {
+            // フロントマターがない場合は新規作成
+            newContent = "---\n";
+            newContent += "add_todo: true\n";
+            newContent += "---\n";
+            newContent += content;
+          } else {
+            // 既存のフロントマターを更新
+            let frontmatterObj: Record<string, any> = {};
+            try {
+              frontmatterObj =
+                parseYaml(
+                  lines.slice(frontmatterStart + 1, frontmatterEnd).join("\n")
+                ) || {};
+            } catch {}
+            frontmatterObj.add_todo = true;
+            const newFrontmatterLines = Object.entries(frontmatterObj).map(
+              ([k, v]) => `${k}: ${v}`
+            );
+            newContent = lines.slice(0, frontmatterStart + 1).join("\n") + "\n";
+            newContent += newFrontmatterLines.join("\n") + "\n";
+            newContent += lines.slice(frontmatterEnd).join("\n");
+          }
+          fileModified = true;
+        }
+
+        if (fileModified) {
+          await vault.modify(file, newContent);
+        }
+      }
+    }
+
+    return collectedTodos;
   }
 }
 
@@ -705,6 +1073,19 @@ class TodoCollectorSettingTab extends PluginSettingTab {
             .setValue(this.plugin.settings.geminiApiKey)
             .onChange(async (value) => {
               this.plugin.settings.geminiApiKey = value.trim();
+              await this.plugin.saveSettings();
+            })
+        );
+
+      // 分類済みファイル保護機能
+      new Setting(containerEl)
+        .setName("分類済みファイルを保護する")
+        .setDesc("分類済みファイルを一定時間保護し、上書きを防ぎます")
+        .addToggle((toggle) =>
+          toggle
+            .setValue(this.plugin.settings.protectClassifiedFiles)
+            .onChange(async (value) => {
+              this.plugin.settings.protectClassifiedFiles = value;
               await this.plugin.saveSettings();
             })
         );
