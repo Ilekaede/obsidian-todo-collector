@@ -11,15 +11,45 @@ const mockGeminiResponse = {
       content: {
         parts: [
           {
-            text: `# 🛒 買い物関連
-- [ ] 牛乳を買う (shopping)
-- [ ] パンを買う (shopping)
-
-# 💻 開発関連
-- [ ] バグを修正する (development)
-
-# 📚 学習関連
-- [ ] TypeScriptを勉強する (learning)`,
+            text: `{
+  "groups": {
+    "買い物関連": [
+      {
+        "text": "牛乳を買う",
+        "completed": false,
+        "source": "shopping"
+      },
+      {
+        "text": "パンを買う",
+        "completed": false,
+        "source": "shopping"
+      }
+    ],
+    "開発関連": [
+      {
+        "text": "バグを修正する",
+        "completed": false,
+        "source": "development"
+      }
+    ],
+    "学習関連": [
+      {
+        "text": "TypeScriptを勉強する",
+        "completed": false,
+        "source": "learning"
+      }
+    ],
+    "家事関連": [],
+    "仕事関連": [],
+    "健康関連": [],
+    "未分類": []
+  },
+  "metadata": {
+    "lastUpdated": "2025-01-27T10:30:00Z",
+    "totalTodos": 4,
+    "completedCount": 0
+  }
+}`,
           },
         ],
       },
@@ -42,33 +72,84 @@ async function classifyWithGemini(
       throw new Error("API key is empty");
     }
 
-    const prompt = `以下のTODOリストを分析して、カテゴリ別に整理し、優先度も設定してください。
+    const prompt = `以下のTODOリストを分析して、カテゴリ別に整理してください。
 
 TODOリスト:
 ${content}
 
-分類結果は以下のMarkdown形式で返してください：
+分類結果は以下のJSON形式で返してください。必ず有効なJSONのみを返し、説明文やマークダウン記法は含めないでください：
 
-# 🛒 買い物関連
-- [ ] TODO1 (ファイル名)
-- [ ] TODO2 (ファイル名)
-
-# 💻 開発関連
-- [ ] TODO3 (ファイル名)
-
-# 📚 学習関連
-- [ ] TODO4 (ファイル名)
+{
+  "groups": {
+    "買い物関連": [
+      {
+        "text": "牛乳を買う",
+        "completed": false,
+        "source": "ファイル名"
+      }
+    ],
+    "開発関連": [
+      {
+        "text": "バグ修正",
+        "completed": false,
+        "source": "ファイル名"
+      }
+    ],
+    "学習関連": [
+      {
+        "text": "新しい技術を学ぶ",
+        "completed": false,
+        "source": "ファイル名"
+      }
+    ],
+    "家事関連": [
+      {
+        "text": "掃除をする",
+        "completed": false,
+        "source": "ファイル名"
+      }
+    ],
+    "仕事関連": [
+      {
+        "text": "会議の準備",
+        "completed": false,
+        "source": "ファイル名"
+      }
+    ],
+    "健康関連": [
+      {
+        "text": "運動する",
+        "completed": false,
+        "source": "ファイル名"
+      }
+    ],
+    "未分類": [
+      {
+        "text": "分類できないTODO",
+        "completed": false,
+        "source": "ファイル名"
+      }
+    ]
+  },
+  "metadata": {
+    "lastUpdated": "2025-01-27T10:30:00Z",
+    "totalTodos": 15,
+    "completedCount": 3
+  }
+}
 
 カテゴリは以下のような分類を参考にしてください：
-- 買い物関連（🛒）
-- 開発関連（💻）
-- 学習関連（📚）
-- 家事関連（🏠）
-- 仕事関連（💼）
-- 健康関連（💪）
-- その他（📝）
+- 買い物関連：日用品、食材、衣類などの購入
+- 開発関連：プログラミング、デバッグ、技術的な作業
+- 学習関連：勉強、読書、スキルアップ
+- 家事関連：掃除、洗濯、料理、整理
+- 仕事関連：業務、会議、報告書
+- 健康関連：運動、医療、健康管理
+- 未分類：上記に当てはまらないもの
 
-元のTODOの形式（- [ ] 内容 (ファイル名)）を保持してください。`;
+元のTODOの内容を保持し、sourceフィールドには元のファイル名を設定してください。
+completedフィールドは元のTODOの完了状態を反映してください。
+必ず有効なJSONのみを返してください。`;
 
     const requestBody = {
       contents: [
@@ -153,13 +234,48 @@ describe("AI Classification Tests", () => {
       // 分類処理を実行
       const result = await classifyWithGemini(testContent, "test-api-key");
 
+      // JSON形式の結果をパース
+      const jsonData = JSON.parse(result);
+
       // 結果の検証
-      expect(result).toContain("# 🛒 買い物関連");
-      expect(result).toContain("# 💻 開発関連");
-      expect(result).toContain("# 📚 学習関連");
-      expect(result).toContain("- [ ] 牛乳を買う (shopping)");
-      expect(result).toContain("- [ ] バグを修正する (development)");
-      expect(result).toContain("- [ ] TypeScriptを勉強する (learning)");
+      expect(jsonData).toHaveProperty("groups");
+      expect(jsonData.groups).toHaveProperty("買い物関連");
+      expect(jsonData.groups).toHaveProperty("開発関連");
+      expect(jsonData.groups).toHaveProperty("学習関連");
+
+      // 買い物関連のTODOを確認
+      expect(jsonData.groups["買い物関連"]).toHaveLength(2);
+      expect(jsonData.groups["買い物関連"][0]).toHaveProperty(
+        "text",
+        "牛乳を買う"
+      );
+      expect(jsonData.groups["買い物関連"][0]).toHaveProperty(
+        "completed",
+        false
+      );
+      expect(jsonData.groups["買い物関連"][0]).toHaveProperty(
+        "source",
+        "shopping"
+      );
+
+      // 開発関連のTODOを確認
+      expect(jsonData.groups["開発関連"]).toHaveLength(1);
+      expect(jsonData.groups["開発関連"][0]).toHaveProperty(
+        "text",
+        "バグを修正する"
+      );
+
+      // 学習関連のTODOを確認
+      expect(jsonData.groups["学習関連"]).toHaveLength(1);
+      expect(jsonData.groups["学習関連"][0]).toHaveProperty(
+        "text",
+        "TypeScriptを勉強する"
+      );
+
+      // メタデータの確認
+      expect(jsonData).toHaveProperty("metadata");
+      expect(jsonData.metadata).toHaveProperty("totalTodos", 4);
+      expect(jsonData.metadata).toHaveProperty("completedCount", 0);
 
       // APIが正しく呼ばれたことを確認
       expect(mockFetch).toHaveBeenCalledWith(
@@ -203,10 +319,12 @@ describe("AI Classification Tests", () => {
 
       const result = await classifyWithGemini(emptyContent, "test-api-key");
 
-      // 空のコンテンツでもAPIが正常に動作すれば分類結果が返される
-      expect(result).toContain("# 🛒 買い物関連");
-      expect(result).toContain("# 💻 開発関連");
-      expect(result).toContain("# 📚 学習関連");
+      // JSON形式の結果をパースして検証
+      const jsonData = JSON.parse(result);
+      expect(jsonData).toHaveProperty("groups");
+      expect(jsonData.groups).toHaveProperty("買い物関連");
+      expect(jsonData.groups).toHaveProperty("開発関連");
+      expect(jsonData.groups).toHaveProperty("学習関連");
       // 空のコンテンツでもAPIは呼ばれる
       expect(mockFetch).toHaveBeenCalled();
     });
@@ -242,7 +360,7 @@ describe("AI Classification Tests", () => {
   });
 
   describe("分類結果の形式テスト", () => {
-    test("分類結果が正しいMarkdown形式であることを確認", async () => {
+    test("分類結果が正しいJSON形式であることを確認", async () => {
       const testContent = "- [ ] テストタスク (test)";
 
       mockFetch.mockResolvedValueOnce({
@@ -252,12 +370,23 @@ describe("AI Classification Tests", () => {
 
       const result = await classifyWithGemini(testContent, "test-api-key");
 
-      // Markdownの形式を確認
-      expect(result).toMatch(/^# .+/m); // ヘッダーが存在する
-      expect(result).toMatch(/^- \[ \].+\(.+\)$/m); // TODOアイテムの形式
-      expect(result).toContain("🛒"); // 絵文字が含まれている
-      expect(result).toContain("💻");
-      expect(result).toContain("📚");
+      // JSON形式の検証
+      const jsonData = JSON.parse(result);
+      expect(jsonData).toHaveProperty("groups");
+      expect(jsonData).toHaveProperty("metadata");
+      expect(typeof jsonData.groups).toBe("object");
+      expect(Array.isArray(jsonData.groups["買い物関連"])).toBe(true);
+
+      // TODOアイテムの構造確認
+      if (jsonData.groups["買い物関連"].length > 0) {
+        const todoItem = jsonData.groups["買い物関連"][0];
+        expect(todoItem).toHaveProperty("text");
+        expect(todoItem).toHaveProperty("completed");
+        expect(todoItem).toHaveProperty("source");
+        expect(typeof todoItem.text).toBe("string");
+        expect(typeof todoItem.completed).toBe("boolean");
+        expect(typeof todoItem.source).toBe("string");
+      }
     });
 
     test("分類結果に必要なカテゴリが含まれていることを確認", async () => {
@@ -271,10 +400,21 @@ describe("AI Classification Tests", () => {
 
       const result = await classifyWithGemini(testContent, "test-api-key");
 
+      // JSON形式の結果をパース
+      const jsonData = JSON.parse(result);
+
       // 主要なカテゴリが含まれていることを確認
-      const categories = ["買い物関連", "開発関連", "学習関連"];
+      const categories = [
+        "買い物関連",
+        "開発関連",
+        "学習関連",
+        "家事関連",
+        "仕事関連",
+        "健康関連",
+        "未分類",
+      ];
       categories.forEach((category) => {
-        expect(result).toContain(category);
+        expect(jsonData.groups).toHaveProperty(category);
       });
     });
   });
@@ -333,7 +473,13 @@ describe("AI Classification Tests", () => {
 
       expect(response.ok).toBe(true);
       const result = await response.json();
-      expect(result.classifiedContent).toContain("# 🛒 買い物関連");
+
+      // JSON形式の分類結果を検証
+      const jsonData = JSON.parse(result.classifiedContent);
+      expect(jsonData).toHaveProperty("groups");
+      expect(jsonData.groups).toHaveProperty("買い物関連");
+      expect(jsonData.groups).toHaveProperty("開発関連");
+      expect(jsonData.groups).toHaveProperty("学習関連");
     });
   });
 });

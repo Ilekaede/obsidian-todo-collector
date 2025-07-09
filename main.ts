@@ -11,6 +11,27 @@ import {
   Vault,
 } from "obsidian";
 
+interface TodoItem {
+  text: string;
+  completed: boolean;
+  source?: string;
+  createdAt?: string;
+  priority?: number;
+}
+
+interface TodoGroups {
+  [groupName: string]: TodoItem[];
+}
+
+interface TodoData {
+  groups: TodoGroups;
+  metadata?: {
+    lastUpdated: string;
+    totalTodos: number;
+    completedCount: number;
+  };
+}
+
 interface CompletedTodo {
   text: string;
   completedAt: number;
@@ -470,9 +491,39 @@ export default class LineTodoCollectorPlugin extends Plugin {
 
       if (response.ok) {
         const result = await response.json();
-        new Notice(
-          `✅ プロキシサーバー接続成功: ${result.message || "接続確認完了"}`
-        );
+
+        // テスト結果の詳細分析
+        let statusMessage = "✅ プロキシサーバー接続成功";
+
+        if (result.is_valid_json) {
+          statusMessage += "\n✅ JSON形式でのレスポンス確認済み";
+
+          if (
+            result.json_structure &&
+            result.json_structure.includes("groups")
+          ) {
+            statusMessage += "\n✅ 正しいJSON構造を確認";
+
+            if (result.groups_count && result.groups_count > 0) {
+              statusMessage += `\n✅ ${result.groups_count}個のグループに分類済み`;
+            } else {
+              statusMessage += "\n⚠️ グループ分類が0個";
+            }
+          } else {
+            statusMessage += "\n⚠️ JSON構造に問題があります";
+          }
+        } else {
+          statusMessage += "\n⚠️ JSON形式でのレスポンスではありません";
+        }
+
+        if (result.classified_content) {
+          statusMessage += `\n📝 分類結果プレビュー: ${result.classified_content.substring(
+            0,
+            100
+          )}...`;
+        }
+
+        new Notice(statusMessage);
       } else {
         new Notice(
           `❌ プロキシサーバー接続失敗: ${response.status} ${response.statusText}`
@@ -509,6 +560,12 @@ export default class LineTodoCollectorPlugin extends Plugin {
 
       // グループヘッダー（## で始まる行）を検出
       if (trimmedLine.startsWith("## ")) {
+        // 前のグループが存在する場合は終了
+        if (inGroup && currentGroup) {
+          inGroup = false;
+          currentGroup = "";
+        }
+
         currentGroup = trimmedLine.substring(3).trim();
         if (!existingGroups[currentGroup]) {
           existingGroups[currentGroup] = [];
@@ -522,25 +579,42 @@ export default class LineTodoCollectorPlugin extends Plugin {
         if (inGroup && currentGroup) {
           // 既存のグループに属するTODO
           existingGroups[currentGroup].push(line);
-          console.log("追加されました！");
         } else {
           // グループに属していないTODOは未分類グループに追加
           if (!existingGroups["未分類"]) {
             existingGroups["未分類"] = [];
           }
           existingGroups["未分類"].push(line);
-          console.log("追加されませんでした");
         }
       } else if (trimmedLine === "" && inGroup) {
-        // 空行でグループ終了
-        inGroup = false;
-        currentGroup = "";
+        // 空行でもグループは終了しない（次のグループヘッダーまで維持）
       }
     }
 
-    console.log("存在するグループ:", existingGroups);
-
     return { existingGroups, newTodos };
+  }
+
+  // JSON形式のTODOデータを.md形式に変換
+  convertJsonToMarkdown(todoData: TodoData): string {
+    const result: string[] = [];
+
+    for (const [groupName, todos] of Object.entries(todoData.groups)) {
+      if (todos.length > 0) {
+        result.push(`## ${groupName}`);
+        result.push("");
+
+        for (const todo of todos) {
+          const checkbox = todo.completed ? "- [x]" : "- [ ]";
+          const sourceInfo = todo.source ? ` (${todo.source})` : "";
+          const todoLine = `${checkbox} ${todo.text}${sourceInfo}`;
+          result.push(todoLine);
+        }
+
+        result.push("");
+      }
+    }
+
+    return result.join("\n");
   }
 
   // 既存の分類構造と新しい分類結果を統合するメソッド
@@ -551,47 +625,47 @@ export default class LineTodoCollectorPlugin extends Plugin {
     // 新規分類結果をパース
     const newGroups: Record<string, string[]> = {};
     let currentGroup = "";
-    let inGroup = false;
     const newLines = newClassification.split("\n");
+
     for (const line of newLines) {
       const trimmedLine = line.trim();
+
+      // グループヘッダーの検出（# または ## で始まる行）
       if (trimmedLine.startsWith("# ")) {
         currentGroup = trimmedLine.substring(2).trim();
         if (!newGroups[currentGroup]) {
           newGroups[currentGroup] = [];
         }
-        inGroup = true;
         continue;
       } else if (trimmedLine.startsWith("## ")) {
         currentGroup = trimmedLine.substring(3).trim();
         if (!newGroups[currentGroup]) {
           newGroups[currentGroup] = [];
         }
-        inGroup = true;
         continue;
       }
-      if (
-        (trimmedLine.startsWith("- [ ]") || trimmedLine.startsWith("- [x]")) &&
-        currentGroup
-      ) {
-        newGroups[currentGroup].push(line);
-      } else if (trimmedLine === "" && inGroup) {
-        inGroup = false;
-        currentGroup = "";
-      }
-    }
 
-    // console.log("newGroups", newGroups); OK
+      // TODOアイテムの検出（- [ ] または - [x] で始まる行）
+      if (trimmedLine.startsWith("- [ ]") || trimmedLine.startsWith("- [x]")) {
+        // 現在のグループが設定されている場合はそのグループに追加
+        if (currentGroup && currentGroup.trim() !== "") {
+          if (!newGroups[currentGroup]) {
+            newGroups[currentGroup] = [];
+          }
+          newGroups[currentGroup].push(line);
+        } else {
+          // グループが設定されていない場合は「未分類」グループに追加
+          if (!newGroups["未分類"]) {
+            newGroups["未分類"] = [];
+          }
+          newGroups["未分類"].push(line);
+        }
+      }
+      // 空行は無視（グループ終了の判定は行わない）
+    }
 
     let result: string[] = [];
     for (const groupName of DEFAULT_GROUPS) {
-      console.log(
-        "check",
-        existingGroups[groupName],
-        groupName,
-        newGroups[groupName],
-        groupName
-      );
       const mergedTodos = [
         ...(existingGroups[groupName] || []),
         ...(newGroups[groupName] || []),
@@ -603,7 +677,6 @@ export default class LineTodoCollectorPlugin extends Plugin {
         result.push("");
       }
     }
-    // console.log("result", result);
 
     // 既定グループ以外の新規グループも出力
     for (const groupName of Object.keys(newGroups)) {
@@ -617,7 +690,6 @@ export default class LineTodoCollectorPlugin extends Plugin {
         result.push("");
       }
     }
-    console.log("result", result);
     return result.join("\n");
   }
 
@@ -726,37 +798,76 @@ export default class LineTodoCollectorPlugin extends Plugin {
       });
       if (response.ok) {
         const result = await response.json();
-        console.log("response", result);
-
         if (result.classifiedContent) {
-          // 既存の分類構造と新しい分類結果を統合
-          const mergedContent = this.mergeExistingAndNewClassification(
-            existingGroups,
-            result.classifiedContent
-          );
+          // JSON形式かどうかを判定
+          let todoData: TodoData | null = null;
+          let isJsonFormat = false;
 
-          // 統合結果が空の場合は、既存のTODOを保持しつつ新規TODOを追加
-          console.log("trim", mergedContent.trim());
-          if (!mergedContent || mergedContent.trim() === "") {
-            // 既存のTODOを保持し、新規TODOを「未分類」グループに追加
-            if (!existingGroups["未分類"]) {
-              existingGroups["未分類"] = [];
+          try {
+            const jsonData = JSON.parse(result.classifiedContent);
+            if (jsonData.groups && typeof jsonData.groups === "object") {
+              todoData = jsonData as TodoData;
+              isJsonFormat = true;
             }
-            existingGroups["未分類"].push(...newTodos);
-            // console.log("eG", existingGroups);
+          } catch (parseError) {
+            isJsonFormat = false;
+          }
 
-            const fallbackContent = this.convertGroupsToContent(existingGroups);
+          if (isJsonFormat && todoData) {
+            // JSON形式の場合は直接処理
 
-            // ファイルを作成または更新
-            if (todoFile && todoFile instanceof TFile) {
-              await this.app.vault.modify(todoFile, fallbackContent);
-            } else {
-              await this.app.vault.create(outputFilePath, fallbackContent);
+            // 既存のTODOと新しいTODOを統合
+            const mergedGroups: TodoGroups = {};
+
+            // 既定グループを初期化
+            for (const groupName of DEFAULT_GROUPS) {
+              mergedGroups[groupName] = [];
             }
-            new Notice(
-              "⚠️ 統合結果が空でした。既存のTODOを保持し、新規TODOを未分類グループに追加しました。"
-            );
-          } else {
+
+            // 既存のTODOを追加
+            for (const [groupName, existingTodos] of Object.entries(
+              existingGroups
+            )) {
+              if (existingTodos.length > 0) {
+                mergedGroups[groupName] = existingTodos.map((todo) => {
+                  // 既存のTODOをTodoItem形式に変換
+                  const completed = todo.startsWith("- [x]");
+                  const text = todo.substring(6).trim();
+                  const sourceMatch = text.match(/\(([^)]+)\)$/);
+                  const source = sourceMatch ? sourceMatch[1] : undefined;
+                  const cleanText = sourceMatch
+                    ? text.replace(/\([^)]+\)$/, "").trim()
+                    : text;
+
+                  const convertedTodo = {
+                    text: cleanText,
+                    completed,
+                    source,
+                    createdAt: new Date().toISOString(),
+                  };
+
+                  return convertedTodo;
+                });
+              }
+            }
+
+            // 新しいTODOを追加
+            for (const [groupName, newTodos] of Object.entries(
+              todoData.groups
+            )) {
+              if (newTodos.length > 0) {
+                if (!mergedGroups[groupName]) {
+                  mergedGroups[groupName] = [];
+                }
+                mergedGroups[groupName].push(...newTodos);
+              }
+            }
+
+            // 結果を.md形式に変換
+            const mergedContent = this.convertJsonToMarkdown({
+              groups: mergedGroups,
+            });
+
             // ファイルを作成または更新
             if (todoFile && todoFile instanceof TFile) {
               await this.app.vault.modify(todoFile, mergedContent);
@@ -767,8 +878,66 @@ export default class LineTodoCollectorPlugin extends Plugin {
             // 分類完了時刻を記録
             this.settings.lastClassificationTime = Date.now();
             await this.saveSettings();
-            new Notice("✅ TODOの分類が完了しました");
+            new Notice("✅ TODOの分類が完了しました（JSON形式）");
+          } else {
+            // 従来の.md形式として処理
+            const mergedContent = this.mergeExistingAndNewClassification(
+              existingGroups,
+              result.classifiedContent
+            );
+
+            // 統合結果が空の場合は、既存のTODOを保持しつつ新規TODOを追加
+            if (!mergedContent || mergedContent.trim() === "") {
+              // 既存のTODOを保持し、新規TODOを「未分類」グループに追加
+              if (!existingGroups["未分類"]) {
+                existingGroups["未分類"] = [];
+              }
+              existingGroups["未分類"].push(...newTodos);
+
+              const fallbackContent =
+                this.convertGroupsToContent(existingGroups);
+
+              // ファイルを作成または更新
+              if (todoFile && todoFile instanceof TFile) {
+                await this.app.vault.modify(todoFile, fallbackContent);
+              } else {
+                await this.app.vault.create(outputFilePath, fallbackContent);
+              }
+              new Notice(
+                "⚠️ 統合結果が空でした。既存のTODOを保持し、新規TODOを未分類グループに追加しました。"
+              );
+            } else {
+              // ファイルを作成または更新
+              if (todoFile && todoFile instanceof TFile) {
+                await this.app.vault.modify(todoFile, mergedContent);
+              } else {
+                await this.app.vault.create(outputFilePath, mergedContent);
+              }
+
+              // 分類完了時刻を記録
+              this.settings.lastClassificationTime = Date.now();
+              await this.saveSettings();
+              new Notice("✅ TODOの分類が完了しました");
+            }
           }
+        } else {
+          // classifiedContentが存在しない場合のフォールバック処理
+          if (!existingGroups["未分類"]) {
+            existingGroups["未分類"] = [];
+          }
+          existingGroups["未分類"].push(...newTodos);
+
+          const fallbackContent = this.convertGroupsToContent(existingGroups);
+
+          // ファイルを作成または更新
+          if (todoFile && todoFile instanceof TFile) {
+            await this.app.vault.modify(todoFile, fallbackContent);
+          } else {
+            await this.app.vault.create(outputFilePath, fallbackContent);
+          }
+          new Notice(
+            "⚠️ サーバーからの分類結果が不正でした。新規TODOを未分類グループに追加しました。"
+          );
         }
       } else {
         // エラーレスポンスの詳細を取得
